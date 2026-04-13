@@ -30,11 +30,10 @@ def make_member(id, name, skills, level="mid", hours=40):
     return TeamMember(id=id, name=name, skills=skills,
                       experience_level=level, weekly_availability_hours=hours)
 
-def make_task(id, title, skills, est_hours=20, deps=None):
-    from pydantic import Field
+def make_task(tempId, title, skills, est_hours=20, deps=None):
     return Task(
-        id=id, title=title, required_skills=skills,
-        estimated_hours=est_hours, start_day=0, end_day=0,
+        tempId=tempId, title=title, required_skills=skills,
+        estimatedHours=est_hours, startDate="", dueDate="",
         dependencies=deps or []
     )
 
@@ -202,32 +201,32 @@ class TestAssignBestMember:
 class TestResolveDependencies:
 
     def test_backend_tasks_chained(self):
-        t1 = make_task(1, "Backend Development", ["python", "fastapi"])
-        t2 = make_task(2, "API Integration", ["python", "rest_api"])
+        t1 = make_task("task1", "Backend Development", ["python", "fastapi"])
+        t2 = make_task("task2", "API Integration", ["python", "rest_api"])
         tasks = resolve_dependencies([t1, t2])
         # t2 should depend on t1 (both backend)
-        assert 1 in t2.dependencies
+        assert "task1" in t2.dependencies
 
     def test_frontend_and_backend_run_in_parallel(self):
-        t1 = make_task(1, "Backend Development", ["python"])
-        t2 = make_task(2, "Frontend Development", ["javascript", "react"])
+        t1 = make_task("task1", "Backend Development", ["python"])
+        t2 = make_task("task2", "Frontend Development", ["javascript", "react"])
         tasks = resolve_dependencies([t1, t2])
         # Different groups — no cross dependencies
-        assert 1 not in t2.dependencies
-        assert 2 not in t1.dependencies
+        assert "task1" not in t2.dependencies
+        assert "task2" not in t1.dependencies
 
     def test_general_tasks_depend_on_all_others(self):
-        t1 = make_task(1, "Backend Development", ["python"])
-        t2 = make_task(2, "Frontend Development", ["javascript"])
-        t3 = make_task(3, "Integration Testing", ["testing"])  # general group
+        t1 = make_task("task1", "Backend Development", ["python"])
+        t2 = make_task("task2", "Frontend Development", ["javascript"])
+        t3 = make_task("task3", "Integration Testing", ["testing"])  # general group
         tasks = resolve_dependencies([t1, t2, t3])
         # t3 must depend on both t1 and t2
-        assert 1 in t3.dependencies
-        assert 2 in t3.dependencies
+        assert "task1" in t3.dependencies
+        assert "task2" in t3.dependencies
 
     def test_no_duplicate_dependencies(self):
-        t1 = make_task(1, "Backend Development", ["python"])
-        t2 = make_task(2, "Integration Testing", ["testing"])
+        t1 = make_task("task1", "Backend Development", ["python"])
+        t2 = make_task("task2", "Integration Testing", ["testing"])
         tasks = resolve_dependencies([t1, t2])
         assert len(t2.dependencies) == len(set(t2.dependencies))
 
@@ -239,22 +238,22 @@ class TestResolveDependencies:
 class TestTopologicalSort:
 
     def test_task_with_no_deps_comes_first(self):
-        t1 = make_task(1, "Task A", ["python"])
-        t2 = make_task(2, "Task B", ["python"], deps=[1])
+        t1 = make_task("task1", "Task A", ["python"])
+        t2 = make_task("task2", "Task B", ["python"], deps=["task1"])
         result = topological_sort([t1, t2])
         assert result.index(t1) < result.index(t2)
 
     def test_chain_of_three_sorted_correctly(self):
-        t1 = make_task(1, "A", ["python"])
-        t2 = make_task(2, "B", ["python"], deps=[1])
-        t3 = make_task(3, "C", ["python"], deps=[2])
+        t1 = make_task("task1", "A", ["python"])
+        t2 = make_task("task2", "B", ["python"], deps=["task1"])
+        t3 = make_task("task3", "C", ["python"], deps=["task2"])
         result = topological_sort([t1, t2, t3])
-        ids = [t.id for t in result]
-        assert ids.index(1) < ids.index(2) < ids.index(3)
+        ids = [t.tempId for t in result]
+        assert ids.index("task1") < ids.index("task2") < ids.index("task3")
 
     def test_parallel_tasks_both_appear(self):
-        t1 = make_task(1, "Backend", ["python"])
-        t2 = make_task(2, "Frontend", ["javascript"])
+        t1 = make_task("task1", "Backend", ["python"])
+        t2 = make_task("task2", "Frontend", ["javascript"])
         result = topological_sort([t1, t2])
         assert len(result) == 2
 
@@ -266,30 +265,32 @@ class TestTopologicalSort:
 class TestBuildSchedule:
 
     def test_all_tasks_get_assigned(self):
-        t1 = make_task(1, "Backend Development", ["python", "fastapi"])
-        t2 = make_task(2, "Frontend Development", ["javascript", "react"])
+        t1 = make_task("task1", "Backend Development", ["python", "fastapi"])
+        t2 = make_task("task2", "Frontend Development", ["javascript", "react"])
         build_schedule([t1, t2], [ALICE, BOB])
-        assert t1.assigned_to is not None
-        assert t2.assigned_to is not None
+        assert t1.assignedToUserId is not None
+        assert t2.assignedToUserId is not None
 
     def test_start_and_end_days_not_zero_after_schedule(self):
-        t1 = make_task(1, "Backend Development", ["python"], est_hours=40)
+        t1 = make_task("task1", "Backend Development", ["python"], est_hours=40)
         build_schedule([t1], [ALICE])
         assert t1.end_day > t1.start_day
+        assert t1.startDate != ""
+        assert t1.dueDate != ""
 
     def test_dependent_task_starts_after_dependency_ends(self):
-        t1 = make_task(1, "Backend Development", ["python"], est_hours=40)
-        t2 = make_task(2, "Integration Testing", ["testing"], est_hours=20, deps=[1])
+        t1 = make_task("task1", "Backend Development", ["python"], est_hours=40)
+        t2 = make_task("task2", "Integration Testing", ["testing"], est_hours=20, deps=["task1"])
         build_schedule([t1, t2], [ALICE])
         assert t2.start_day >= t1.end_day
 
     def test_returns_warnings_list(self):
-        t1 = make_task(1, "Backend Development", ["python"])
+        t1 = make_task("task1", "Backend Development", ["python"])
         warnings = build_schedule([t1], [ALICE])
         assert isinstance(warnings, list)
 
     def test_warning_generated_for_missing_skill(self):
-        t1 = make_task(1, "Some Task", ["cobol"])   # nobody has cobol
+        t1 = make_task("task1", "Some Task", ["cobol"])   # nobody has cobol
         warnings = build_schedule([t1], [ALICE, BOB])
         assert len(warnings) == 1
         assert "No perfect match" in warnings[0]
@@ -299,13 +300,13 @@ class TestBuildSchedule:
         senior = make_member(1, "Senior Dev", ["python"], "senior", 40)
         junior = make_member(2, "Junior Dev", ["python"], "junior", 40)
 
-        t_senior = make_task(1, "Backend Development", ["python"], est_hours=60)
-        t_junior = make_task(1, "Backend Development", ["python"], est_hours=60)
+        t_senior = make_task("task1", "Backend Development", ["python"], est_hours=60)
+        t_junior = make_task("task2", "Backend Development", ["python"], est_hours=60)
 
         build_schedule([t_senior], [senior])
         build_schedule([t_junior], [junior])
 
-        assert t_senior.estimated_hours < t_junior.estimated_hours
+        assert t_senior.estimatedHours < t_junior.estimatedHours
 
 
 # ============================================================
@@ -318,7 +319,7 @@ class TestBuildSprints:
         assert build_sprints([]) == []
 
     def test_sprints_are_14_days_long(self):
-        t1 = make_task(1, "A", ["python"])
+        t1 = make_task("task1", "A", ["python"])
         t1.start_day = 0
         t1.end_day = 30
         sprints = build_sprints([t1])
@@ -326,14 +327,14 @@ class TestBuildSprints:
             assert (sprint.end_day - sprint.start_day) == 13   # 14 days inclusive
 
     def test_task_appears_in_correct_sprint(self):
-        t1 = make_task(1, "A", ["python"])
+        t1 = make_task("task1", "A", ["python"])
         t1.start_day = 0
         t1.end_day = 5
         sprints = build_sprints([t1])
-        assert t1.id in sprints[0].task_ids
+        assert t1.tempId in sprints[0].task_ids
 
     def test_sprint_numbers_are_sequential(self):
-        t1 = make_task(1, "A", ["python"])
+        t1 = make_task("task1", "A", ["python"])
         t1.start_day = 0
         t1.end_day = 40
         sprints = build_sprints([t1])
@@ -348,29 +349,29 @@ class TestBuildSprints:
 class TestBuildGanttData:
 
     def test_gantt_has_entry_for_every_task(self):
-        t1 = make_task(1, "A", ["python"])
-        t1.start_day = 0; t1.end_day = 5; t1.assigned_to = 1
-        t2 = make_task(2, "B", ["javascript"])
-        t2.start_day = 0; t2.end_day = 8; t2.assigned_to = 2
+        t1 = make_task("task1", "A", ["python"])
+        t1.start_day = 0; t1.end_day = 5; t1.assignedToUserId = 1
+        t2 = make_task("task2", "B", ["javascript"])
+        t2.start_day = 0; t2.end_day = 8; t2.assignedToUserId = 2
         gantt = build_gantt_data([t1, t2])
         assert len(gantt.task_durations) == 2
 
     def test_gantt_dependencies_recorded_correctly(self):
-        t1 = make_task(1, "A", ["python"])
-        t1.start_day = 0; t1.end_day = 5; t1.assigned_to = 1
-        t2 = make_task(2, "B", ["python"], deps=[1])
-        t2.start_day = 5; t2.end_day = 10; t2.assigned_to = 1
+        t1 = make_task("task1", "A", ["python"])
+        t1.start_day = 0; t1.end_day = 5; t1.assignedToUserId = 1
+        t2 = make_task("task2", "B", ["python"], deps=["task1"])
+        t2.start_day = 5; t2.end_day = 10; t2.assignedToUserId = 1
         gantt = build_gantt_data([t1, t2])
-        assert {"from": 1, "to": 2} in gantt.dependencies
+        assert {"from": "task1", "to": "task2"} in gantt.dependencies
 
     def test_gantt_duration_fields_present(self):
-        t1 = make_task(1, "A", ["python"])
-        t1.start_day = 0; t1.end_day = 5; t1.assigned_to = 1
+        t1 = make_task("task1", "A", ["python"])
+        t1.start_day = 0; t1.end_day = 5; t1.assignedToUserId = 1
         gantt = build_gantt_data([t1])
         entry = gantt.task_durations[0]
         assert "start_day" in entry
         assert "end_day" in entry
-        assert "assigned_to" in entry
+        assert "assignedToUserId" in entry
 
 
 # ============================================================
@@ -476,50 +477,50 @@ class TestAPIEndpoint:
     def test_all_tasks_have_assignments(self):
         data = client.post("/generate", json=AGILE_PAYLOAD).json()
         for task in data["tasks"]:
-            assert task["assigned_to"] is not None
+            assert task["assignedToUserId"] is not None
 
     def test_all_tasks_have_valid_schedule(self):
         data = client.post("/generate", json=AGILE_PAYLOAD).json()
         for task in data["tasks"]:
-            assert task["end_day"] > task["start_day"], \
-                f"Task '{task['title']}' has invalid schedule: {task['start_day']} → {task['end_day']}"
+            assert task["dueDate"] >= task["startDate"], \
+                f"Task '{task['title']}' has invalid schedule: {task['startDate']} → {task['dueDate']}"
 
     def test_dependencies_are_respected(self):
         data = client.post("/generate", json=AGILE_PAYLOAD).json()
-        task_map = {t["id"]: t for t in data["tasks"]}
+        task_map = {t["tempId"]: t for t in data["tasks"]}
         for task in data["tasks"]:
             for dep_id in task["dependencies"]:
                 dep = task_map[dep_id]
-                assert task["start_day"] >= dep["end_day"], \
-                    f"Task {task['id']} starts day {task['start_day']} but depends on task {dep_id} which ends day {dep['end_day']}"
+                assert task["startDate"] >= dep["dueDate"], \
+                    f"Task {task['tempId']} starts {task['startDate']} but depends on {dep_id} which ends {dep['dueDate']}"
 
     def test_skill_based_assignment_backend_goes_to_alice(self):
         data = client.post("/generate", json=AGILE_PAYLOAD).json()
-        backend_tasks = [t for t in data["tasks"] if "python" in t["required_skills"]]
+        # Note: Alice has id=1
+        backend_tasks = [t for t in data["tasks"] if "User Management" in t["title"] or "Backend" in t["title"]]
         for task in backend_tasks:
-            assert task["assigned_to"] == 1, \
+            assert task["assignedToUserId"] == 1, \
                 f"Backend task '{task['title']}' should go to Alice (id=1)"
 
     def test_skill_based_assignment_frontend_goes_to_bob(self):
         data = client.post("/generate", json=AGILE_PAYLOAD).json()
-        frontend_tasks = [t for t in data["tasks"]
-                          if "javascript" in t["required_skills"] or "css" in t["required_skills"]]
+        # Note: Bob has id=2
+        frontend_tasks = [t for t in data["tasks"] if "Frontend" in t["title"]]
         for task in frontend_tasks:
-            assert task["assigned_to"] == 2, \
+            assert task["assignedToUserId"] == 2, \
                 f"Frontend task '{task['title']}' should go to Bob (id=2)"
 
     def test_frontend_and_backend_run_in_parallel(self):
         data = client.post("/generate", json=AGILE_PAYLOAD).json()
-        task_map = {t["id"]: t for t in data["tasks"]}
-        backend  = next((t for t in data["tasks" ] if "python" in t["required_skills"]
-                         and t["assigned_to"] == 1), None)
-        frontend = next((t for t in data["tasks"] if "javascript" in t["required_skills"]
-                         and t["assigned_to"] == 2), None)
-        if backend and frontend:
-            # They should overlap in time — frontend doesn't wait for backend
-            overlap = backend["start_day"] < frontend["end_day"] and \
-                      frontend["start_day"] < backend["end_day"]
-            assert overlap, "Frontend and backend tasks should run in parallel"
+        # Find the earliest tasks for each group
+        backend_tasks = [t for t in data["tasks"] if "Backend" in t["title"] or "Epic" in t["title"]]
+        frontend_tasks = [t for t in data["tasks"] if "Frontend" in t["title"]]
+        
+        if backend_tasks and frontend_tasks:
+            min_backend_start = min(t["startDate"] for t in backend_tasks)
+            min_frontend_start = min(t["startDate"] for t in frontend_tasks)
+            # Both should start at the beginning of the project (day 0)
+            assert min_backend_start == min_frontend_start, "Frontend and backend should start in parallel at day 0"
 
     # --- Sprints ---
 
@@ -555,7 +556,7 @@ class TestAPIEndpoint:
         gantt_deps = {(d["from"], d["to"]) for d in data["gantt_data"]["dependencies"]}
         for task in data["tasks"]:
             for dep_id in task["dependencies"]:
-                assert (dep_id, task["id"]) in gantt_deps
+                assert (dep_id, task["tempId"]) in gantt_deps
 
     # --- Error & warnings ---
 

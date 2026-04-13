@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 import math
+from datetime import datetime, timedelta
 from task_templates import TASK_TEMPLATES, TASK_SKILL_MAP
 
 app = FastAPI()
@@ -30,27 +31,32 @@ class PlanRequest(BaseModel):
 
 # ---------- Output Structures ----------
 class Task(BaseModel):
-    id: int
+    tempId: str
     title: str
     description: Optional[str] = ""
-    required_skills: List[str]
-    estimated_hours: float
-    assigned_to: Optional[int] = None
-    start_day: int
-    end_day: int
-    dependencies: List[int] = Field(default_factory=list)
+    assignedToUserId: Optional[int] = None
+    estimatedHours: float
+    startDate: str  # ISO date string
+    dueDate: str    # ISO date string
+    dependencies: List[str] = Field(default_factory=list)
+    status: str = "todo"
+    
+    # Internal fields for scheduling logic (not part of backend response if excluded)
+    required_skills: List[str] = Field(default_factory=list, exclude=True)
+    start_day: int = Field(default=0, exclude=True)
+    end_day: int = Field(default=0, exclude=True)
 
 
 class Sprint(BaseModel):
     sprint_number: int
     start_day: int
     end_day: int
-    task_ids: List[int]
+    task_ids: List[str]  # Updated to use tempId
 
 
 class GanttData(BaseModel):
-    task_durations: List[dict]  # [{id, title, start_day, end_day, assigned_to}]
-    dependencies: List[dict]    # [{from, to}]
+    task_durations: List[dict]  # [{tempId, title, start_day, end_day, assignedToUserId}]
+    dependencies: List[dict]    # [{from, to}] (using tempId)
 
 
 class GeneratePlanResponse(BaseModel):
@@ -67,6 +73,13 @@ def root():
 
 
 # ---------- Helper Functions ----------
+
+def days_to_iso(days: int) -> str:
+    """Converts a day number (starting from 0 for today) to an ISO date string."""
+    base_date = datetime.now()
+    target_date = base_date + timedelta(days=days)
+    return target_date.date().isoformat()
+
 
 def generate_task_titles(methodology: str, complexity: str) -> List[str]:
     templates = TASK_TEMPLATES.get(methodology, {})
@@ -161,7 +174,7 @@ def resolve_dependencies(tasks: List[Task]) -> List[Task]:
     # Chain dependencies only within each group
     for group_tasks in groups.values():
         for i in range(1, len(group_tasks)):
-            group_tasks[i].dependencies.append(group_tasks[i - 1].id)
+            group_tasks[i].dependencies.append(group_tasks[i - 1].tempId)
 
     # ✅ Make "general" group tasks (like testing) start after all other groups finish
     general_tasks = groups.get("general", [])
@@ -170,8 +183,8 @@ def resolve_dependencies(tasks: List[Task]) -> List[Task]:
         # Make the first general task depend on ALL non-general tasks
         # This ensures it doesn't start until every core task is finished
         for non_general_task in all_other_tasks:
-            if non_general_task.id not in general_tasks[0].dependencies:
-                general_tasks[0].dependencies.append(non_general_task.id)
+            if non_general_task.tempId not in general_tasks[0].dependencies:
+                general_tasks[0].dependencies.append(non_general_task.tempId)
 
     return tasks
 
@@ -181,16 +194,16 @@ def get_daily_hours(member: TeamMember) -> float:
 
 
 def topological_sort(tasks: List[Task]) -> List[Task]:
-    task_map = {t.id: t for t in tasks}
+    task_map = {t.tempId: t for t in tasks}
     visited = set()
     result = []
 
     def visit(task):
-        if task.id in visited:
+        if task.tempId in visited:
             return
         for dep_id in task.dependencies:
             visit(task_map[dep_id])
-        visited.add(task.id)
+        visited.add(task.tempId)
         result.append(task)
 
     for task in tasks:
@@ -211,25 +224,27 @@ def build_schedule(tasks: List[Task], members: List[TeamMember]) -> List[str]:
         assignee_id, warning = assign_best_member(task.required_skills, members, member_available)
         
         if warning:
-            warnings.append(f"Task {task.id} ('{task.title}'): {warning}")
+            warnings.append(f"Task {task.tempId} ('{task.title}'): {warning}")
             
-        task.assigned_to = assignee_id
+        task.assignedToUserId = assignee_id
         
         # ✅ Adjust hours for experience now that we have the assignee
         member = member_map[assignee_id]
-        task.estimated_hours = adjust_hours_for_experience(task.estimated_hours, member)
+        task.estimatedHours = adjust_hours_for_experience(task.estimatedHours, member)
 
         dep_end = max(
-            (next(t for t in tasks if t.id == dep_id).end_day for dep_id in task.dependencies),
+            (next(t for t in tasks if t.tempId == dep_id).end_day for dep_id in task.dependencies),
             default=0
         )
         daily_hours = get_daily_hours(member)
         start = max(dep_end, member_available[assignee_id])
-        duration_days = math.ceil(task.estimated_hours / daily_hours)  # ✅ realistic
+        duration_days = math.ceil(task.estimatedHours / daily_hours)  # ✅ realistic
         end = start + duration_days
 
         task.start_day = int(start)
         task.end_day = int(end)
+        task.startDate = days_to_iso(task.start_day)
+        task.dueDate = days_to_iso(task.end_day)
         member_available[assignee_id] = end
     
     return warnings
@@ -246,7 +261,7 @@ def build_sprints(tasks: List[Task], sprint_length_days: int = 14) -> List[Sprin
     sprint_start = min_day
     while sprint_start <= max_day:
         sprint_end = sprint_start + sprint_length_days - 1
-        task_ids = [t.id for t in tasks if t.start_day <= sprint_end and t.end_day >= sprint_start]
+        task_ids = [t.tempId for t in tasks if t.start_day <= sprint_end and t.end_day >= sprint_start]
         if task_ids:
             sprints.append(Sprint(
                 sprint_number=current_sprint,
@@ -261,12 +276,12 @@ def build_sprints(tasks: List[Task], sprint_length_days: int = 14) -> List[Sprin
 
 def build_gantt_data(tasks: List[Task]) -> GanttData:
     durations = [
-        {"id": t.id, "title": t.title, "start_day": t.start_day,
-         "end_day": t.end_day, "assigned_to": t.assigned_to}
+        {"tempId": t.tempId, "title": t.title, "start_day": t.start_day,
+         "end_day": t.end_day, "assignedToUserId": t.assignedToUserId}
         for t in tasks
     ]
     deps = [
-        {"from": dep_id, "to": t.id}
+        {"from": dep_id, "to": t.tempId}
         for t in tasks for dep_id in t.dependencies
     ]
     return GanttData(task_durations=durations, dependencies=deps)
@@ -283,22 +298,24 @@ def generate_plan(request: PlanRequest):
         )
 
         tasks = []
-        task_id = 1
+        task_counter = 1
 
         for title in titles:
             hours, skills = estimate_hours_and_skills(title, request.project.complexity)
 
             task = Task(
-                id=task_id,
+                tempId=f"task{task_counter}",
                 title=title,
                 required_skills=skills,
-                estimated_hours=hours,
+                estimatedHours=hours,
+                startDate="", # Will be set in build_schedule
+                dueDate="",   # Will be set in build_schedule
+                assignedToUserId=None,
                 start_day=0,
-                end_day=0,
-                assigned_to=None  # Will be assigned in build_schedule
+                end_day=0
             )
             tasks.append(task)
-            task_id += 1
+            task_counter += 1
 
         tasks = resolve_dependencies(tasks)        
         warnings = build_schedule(tasks, request.team_members) 
