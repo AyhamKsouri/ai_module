@@ -452,11 +452,11 @@ class TestAPIEndpoint:
     # --- Basic response structure ---
 
     def test_agile_returns_200(self):
-        r = client.post("/generate-plan", json=AGILE_PAYLOAD)
+        r = client.post("/generate", json=AGILE_PAYLOAD)
         assert r.status_code == 200
 
     def test_agile_response_has_required_fields(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         assert "tasks" in data
         assert "sprints" in data
         assert "gantt_data" in data
@@ -464,28 +464,28 @@ class TestAPIEndpoint:
         assert "error" in data
 
     def test_agile_error_is_null(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         assert data["error"] is None
 
     # --- Tasks ---
 
     def test_agile_returns_tasks(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         assert len(data["tasks"]) > 0
 
     def test_all_tasks_have_assignments(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         for task in data["tasks"]:
             assert task["assigned_to"] is not None
 
     def test_all_tasks_have_valid_schedule(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         for task in data["tasks"]:
             assert task["end_day"] > task["start_day"], \
                 f"Task '{task['title']}' has invalid schedule: {task['start_day']} → {task['end_day']}"
 
     def test_dependencies_are_respected(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         task_map = {t["id"]: t for t in data["tasks"]}
         for task in data["tasks"]:
             for dep_id in task["dependencies"]:
@@ -494,14 +494,14 @@ class TestAPIEndpoint:
                     f"Task {task['id']} starts day {task['start_day']} but depends on task {dep_id} which ends day {dep['end_day']}"
 
     def test_skill_based_assignment_backend_goes_to_alice(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         backend_tasks = [t for t in data["tasks"] if "python" in t["required_skills"]]
         for task in backend_tasks:
             assert task["assigned_to"] == 1, \
                 f"Backend task '{task['title']}' should go to Alice (id=1)"
 
     def test_skill_based_assignment_frontend_goes_to_bob(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         frontend_tasks = [t for t in data["tasks"]
                           if "javascript" in t["required_skills"] or "css" in t["required_skills"]]
         for task in frontend_tasks:
@@ -509,9 +509,9 @@ class TestAPIEndpoint:
                 f"Frontend task '{task['title']}' should go to Bob (id=2)"
 
     def test_frontend_and_backend_run_in_parallel(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         task_map = {t["id"]: t for t in data["tasks"]}
-        backend  = next((t for t in data["tasks"] if "python" in t["required_skills"]
+        backend  = next((t for t in data["tasks" ] if "python" in t["required_skills"]
                          and t["assigned_to"] == 1), None)
         frontend = next((t for t in data["tasks"] if "javascript" in t["required_skills"]
                          and t["assigned_to"] == 2), None)
@@ -524,34 +524,34 @@ class TestAPIEndpoint:
     # --- Sprints ---
 
     def test_agile_returns_sprints(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         assert data["sprints"] is not None
         assert len(data["sprints"]) > 0
 
     def test_waterfall_returns_no_sprints(self):
-        data = client.post("/generate-plan", json=WATERFALL_PAYLOAD).json()
+        data = client.post("/generate", json=WATERFALL_PAYLOAD).json()
         assert data["sprints"] is None
 
     def test_sprints_are_14_days(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         for sprint in data["sprints"]:
             length = sprint["end_day"] - sprint["start_day"] + 1
             assert length == 14, f"Sprint {sprint['sprint_number']} is {length} days, expected 14"
 
     def test_sprint_numbers_sequential(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         for i, sprint in enumerate(data["sprints"]):
             assert sprint["sprint_number"] == i + 1
 
     # --- Gantt data ---
 
     def test_gantt_data_present(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         assert data["gantt_data"] is not None
         assert len(data["gantt_data"]["task_durations"]) == len(data["tasks"])
 
     def test_gantt_dependencies_match_task_dependencies(self):
-        data = client.post("/generate-plan", json=AGILE_PAYLOAD).json()
+        data = client.post("/generate", json=AGILE_PAYLOAD).json()
         gantt_deps = {(d["from"], d["to"]) for d in data["gantt_data"]["dependencies"]}
         for task in data["tasks"]:
             for dep_id in task["dependencies"]:
@@ -560,15 +560,15 @@ class TestAPIEndpoint:
     # --- Error & warnings ---
 
     def test_missing_skills_returns_warnings_not_error(self):
-        data = client.post("/generate-plan", json=MISSING_SKILLS_PAYLOAD).json()
+        data = client.post("/generate", json=MISSING_SKILLS_PAYLOAD).json()
         # Should still return a plan (with warnings), not crash
         assert data["error"] is None
         assert len(data["tasks"]) > 0
-        assert len(data["warnings"]) > 0
+        assert len(data["warnings"] ) > 0
 
     def test_empty_team_returns_error(self):
         payload = {**AGILE_PAYLOAD, "team_members": []}
-        data = client.post("/generate-plan", json=payload).json()
+        data = client.post("/generate", json=payload).json()
         assert data["error"] is not None
         assert data["tasks"] == []
 

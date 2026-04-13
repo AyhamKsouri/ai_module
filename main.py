@@ -23,7 +23,7 @@ class ProjectInfo(BaseModel):
     methodology: Literal["agile", "waterfall", "kanban"]
 
 
-class GeneratePlanRequest(BaseModel):
+class PlanRequest(BaseModel):
     project: ProjectInfo
     team_members: List[TeamMember]
 
@@ -274,8 +274,8 @@ def build_gantt_data(tasks: List[Task]) -> GanttData:
 
 # ---------- Core Logic ----------
 
-@app.post("/generate-plan", response_model=GeneratePlanResponse)
-def generate_plan(request: GeneratePlanRequest):
+@app.post("/generate", response_model=GeneratePlanResponse)
+def generate_plan(request: PlanRequest):
     try:
         titles = generate_task_titles(
             request.project.methodology,
