@@ -1,11 +1,25 @@
+import os
+from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 import math
 from datetime import datetime, timedelta
 from task_templates import TASK_TEMPLATES, TASK_SKILL_MAP
 
+load_dotenv()
+
 app = FastAPI()
+
+# ---------- CORS Configuration ----------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins, including localhost:5000
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------- Input Structures ----------
@@ -38,6 +52,8 @@ class Task(BaseModel):
     estimatedHours: float
     startDate: str  # ISO date string
     dueDate: str    # ISO date string
+    start: Optional[int] = None
+    end: Optional[int] = None
     dependencies: List[str] = Field(default_factory=list)
     status: str = "todo"
     
@@ -52,6 +68,7 @@ class Sprint(BaseModel):
     start_day: int
     end_day: int
     task_ids: List[str]  # Updated to use tempId
+    tasks: Optional[List[Task]] = None
 
 
 class GanttData(BaseModel):
@@ -287,11 +304,40 @@ def build_gantt_data(tasks: List[Task]) -> GanttData:
     return GanttData(task_durations=durations, dependencies=deps)
 
 
+def normalize_task(task: dict) -> dict:
+    """Ensure every task has both ISO strings and Unix seconds for dates."""
+    for date_field, unix_field in [("startDate", "start"), ("dueDate", "end")]:
+        iso = task.get(date_field)
+        if iso and not task.get(unix_field):
+            try:
+                dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                task[unix_field] = int(dt.timestamp())
+            except ValueError:
+                task[unix_field] = None
+    return task
+
+
+def normalize_tasks_recursive(tasks: list) -> list:
+    result = []
+    for task in tasks:
+        task = normalize_task(task)
+        if "children" in task:
+            task["children"] = normalize_tasks_recursive(task["children"])
+        if "tasks" in task:
+            task["tasks"] = normalize_tasks_recursive(task["tasks"])
+        result.append(task)
+    return result
+
+
 # ---------- Core Logic ----------
 
 @app.post("/generate", response_model=GeneratePlanResponse)
 def generate_plan(request: PlanRequest):
     try:
+        # Normalize member skills to lowercase for robust matching
+        for member in request.team_members:
+            member.skills = [s.lower() for s in member.skills]
+
         titles = generate_task_titles(
             request.project.methodology,
             request.project.complexity
@@ -326,12 +372,20 @@ def generate_plan(request: PlanRequest):
 
         gantt_data = build_gantt_data(tasks)        
 
-        return GeneratePlanResponse(
-            tasks=tasks, 
-            sprints=sprints, 
-            gantt_data=gantt_data,
-            warnings=warnings
-        )
+        response_data = {
+            "tasks": [task.dict() for task in tasks],
+            "sprints": [sprint.dict() for sprint in sprints] if sprints else None,
+            "gantt_data": gantt_data.dict() if gantt_data else None,
+            "warnings": warnings
+        }
+
+        response_data["tasks"] = normalize_tasks_recursive(response_data.get("tasks", []))
+
+        if "sprints" in response_data and response_data["sprints"]:
+            for sprint in response_data["sprints"]:
+                sprint["tasks"] = normalize_tasks_recursive(sprint.get("tasks") or [])
+
+        return response_data
 
     except ValueError as e:
         return GeneratePlanResponse(tasks=[], error=str(e))

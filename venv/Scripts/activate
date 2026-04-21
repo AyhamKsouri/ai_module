@@ -35,7 +35,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="C:\Users\Ayham\Desktop\ai_module\venv"
+VIRTUAL_ENV="C:\Users\Ayham\Desktop\PFA\ai_module\venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"
